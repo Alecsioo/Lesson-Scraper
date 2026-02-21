@@ -71,7 +71,7 @@ SESSION_FILE=session.json
 ## 🚀 Running the Script
 
 ```bash
-python scraper.py
+python lesson_scraper.py
 ```
 
 ---
