@@ -87,7 +87,8 @@ async def scrape():
 
             safe_chap  = chap_title.replace(' ', '_').replace('/', '-').replace(':', '')
             chap_dir   = OUTPUT_DIR / f"ch{chap_idx+1:02}_{safe_chap}"
-            chap_dir.mkdir(exist_ok=True)
+            # chap_dir.mkdir(exist_ok=True)
+            chap_dir.mkdir(parents=True, exist_ok=True)
             print(f"── Chapter {chap_idx+1}: {chap_title} → ./{chap_dir}/")
 
             lesson_cards = chapter.locator(SELECTOR_LESSON_CARD)
