@@ -24,8 +24,8 @@ SELECTOR_BTN_CHECKPOINT = os.getenv("SELECTOR_BTN_CHECKPOINT")
 SELECTOR_BTN_LESSON     = os.getenv("SELECTOR_BTN_LESSON")
 API_RESPONSE_PATTERN    = os.getenv("API_RESPONSE_PATTERN")
 LOGIN_URL_FRAGMENT      = os.getenv("LOGIN_URL_FRAGMENT", "/login")
-OUTPUT_DIR              = Path(os.getenv("OUTPUT_DIR", "lessons"))
-SESSION_FILE            = Path(os.getenv("SESSION_FILE", "session.json"))
+OUTPUT_DIR              = Path(os.getenv("OUTPUT_DIR", "../lessons"))
+SESSION_FILE            = Path(os.getenv("SESSION_FILE", "../session.json"))
 SKIP_TYPES              = [s.strip().upper() for s in os.getenv("SKIP_TYPES", "").split(",") if s.strip()]
 
 def sanitize_filename(name: str) -> str:
