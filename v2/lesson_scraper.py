@@ -156,7 +156,7 @@ def main() -> int:
         course_pack_path.mkdir(parents=True, exist_ok=True)
 
         # Dynamically build the course URL depending on the course pack we are processing
-        course_url = base_course_pack.format(pack=course_pack)
+        course_url = base_course_pack.format(pack=course_pack, source=selected_language, lang=selected_language)
 
         raw_response = session.get(course_url)
         assert_response_ok(raw_response)
@@ -192,7 +192,7 @@ def main() -> int:
                 chapter_subdir.mkdir(parents=True, exist_ok=True)
                 for lesson in chapter.lessons:
                     # Build the lesson URL dynamically and retrieve the associated lesson JSON
-                    lesson_url = base_lesson_url.format(lesson_id=lesson.id)
+                    lesson_url = base_lesson_url.format(lesson_id=lesson.id, lang=selected_language)
 
                     raw_response = session.get(lesson_url)
                     assert_response_ok(raw_response)
