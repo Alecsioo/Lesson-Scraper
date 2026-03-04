@@ -1,246 +1,382 @@
 import json
 import re
 import os
+import html
 
 def clean_tags(text):
-    """
-    Rimuove i tag proprietari [k], [h], i tag HTML e normalizza gli spazi.
-    Utile per visualizzare il testo pulito in UI senza artefatti di formattazione.
-    """
+    """Rimuove tag e normalizza gli spazi senza spezzare le parole coniugate."""
     if not isinstance(text, str): return text
-    # Sostituisce i tag principali e i break lineari con uno spazio
-    text = re.sub(r'\[/?k\]|\[/?h\]|<b>|</b>|<i>|</i>|<u>|</u>|<br>|<br/>', ' ', text)
-    # Rimuove spazi doppi/multipli e spazi iniziali/finali
-    return ' '.join(text.split()).strip()
+    
+    # 1. Decodifica entità HTML (es. &nbsp; -> spazio)
+    text = html.unescape(text)
+    
+    # 2. RIMUOVI i tag di formattazione (senza aggiungere spazi)
+    # Usiamo stringa vuota '' invece di ' ' per b, i, u, k, h
+    text = re.sub(r'\[/?k\]|\[/?h\]|<b>|</b>|<i>|</i>|<u>|</u>', '', text)
+    
+    # 3. SOSTITUISCI i break lineari con uno spazio reale
+    text = re.sub(r'<br>|<br/>', ' ', text)
+    
+    # 4. Normalizza gli spazi multipli (ma ora non ci saranno spazi dentro le parole)
+    text = ' '.join(text.split()).strip()
+    
+    # 5. FIX PUNTEGGIATURA (Regex per eliminare spazi intorno ai simboli)
+    text = re.sub(r'\s+([.,!?%:\;\)\]])', r'\1', text)
+    text = re.sub(r'([¡¿\(\[])\s+', r'\1', text)
+    return text
 
 def extract_tokens(text):
-    """Estrae una lista di tutte le parole o frasi racchiuse tra i tag [k]...[/k]."""
+    """Estrae tutte le parole/frasi racchiuse tra i tag [k]."""
     if not text: return []
     return re.findall(r'\[k\](.*?)\[/k\]', text)
 
 def extract_gap(text):
-    """Estrae solo la prima occorrenza trovata tra i tag [k], utile per gap singoli."""
+    """Estrae la parola corretta tra i tag [k]."""
     match = re.search(r'\[k\](.*?)\[/k\]', text)
     return match.group(1) if match else None
 
 def get_gap_sentence(text):
-    """Sostituisce le parole marcate con [k] con un segnaposto ____ per creare l'esercizio."""
+    """Crea la frase con il 'buco' ____."""
     if not text: return None
     return re.sub(r'(\[k\].*?\[/k\])+', '____', text)
 
 def process_file(input_path):
-    """
-    Funzione principale di parsing del JSON originale.
-    Mappa i dati grezzi in una struttura pulita e semplificata per il database/UI.
-    """
     with open(input_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    # lesson_id estratto direttamente dal campo id radice
     lesson_id = data.get("id", "unknown_id")
     trans = data.get("translation_map", {})
     ents = data.get("entity_map", {})
 
-    # Helper interni per recuperare testi e media mappati negli oggetti originali
-    def get_s(s_id): return trans.get(s_id, {}).get("en", {}).get("value", "")
-    def get_s_audio(s_id): return trans.get(s_id, {}).get("en", {}).get("audio")
-    def get_e_text(e_id): return get_s(ents.get(e_id, {}).get("phrase"))
-    def get_e_example(e_id): return get_s(ents.get(e_id, {}).get("keyphrase"))
+    # 1. Identificiamo dinamicamente la lingua del corso (es. 'es', 'ja', 'fr')
+    course_lang = "en" 
+    for entry in trans.values():
+        if isinstance(entry, dict):
+            for l in entry.keys():
+                if l not in ["en", "interface", "audio"]:
+                    course_lang = l
+                    break
+            if course_lang != "en": break
+
+    # Helper per estrarre testi in lingue specifiche
+    def get_val(s_id, lang): return trans.get(s_id, {}).get(lang, {}).get("value", "")
     
-    def get_e_media(e_id):
-        """Recupera URL di immagini, audio e video (selezionando la qualità migliore disponibile)."""
+    def get_audio(s_id, lang):
+        entry = trans.get(s_id, {})
+        if isinstance(entry, dict):
+            # Prova prima la lingua richiesta, se manca prova qualsiasi lingua
+            audio = entry.get(lang, {}).get("audio")
+            if audio: return audio
+            for l in entry:
+                if isinstance(entry[l], dict) and entry[l].get("audio"):
+                    return entry[l].get("audio")
+        return None
+    
+    def get_audio_by_lang(s_id, lang):
+        """Cerca l'audio specifico per una lingua data."""
+        entry = trans.get(s_id, {})
+        if isinstance(entry, dict):
+            return entry.get(lang, {}).get("audio")
+        return None
+
+    def get_e_data(e_id):
+        """Recupera testi (orig/en), audio e media di un'entità."""
         e = ents.get(e_id, {})
         p_id = e.get("phrase")
+        k_id = e.get("keyphrase")
+        target_id = p_id or k_id
+        
+        text_orig = get_val(target_id, course_lang) or get_val(k_id, course_lang)
+        text_trans = get_val(target_id, "en") or get_val(k_id, "en")
+         
+        audio_orig = get_audio_by_lang(target_id, course_lang)
+        audio_en = get_audio_by_lang(target_id, "en")
+        
         v_urls = e.get("video_urls", {}).get("mp4", {})
-        video_link = v_urls.get("L") or v_urls.get("M") or v_urls.get("S")
         
         return {
+            "raw_orig": text_orig,
+            "text_orig": clean_tags(text_orig),
+            "text_en": clean_tags(text_trans),
+            "audio_orig": audio_orig,
+            "audio_en": audio_en,
             "image": e.get("image") if e.get("image") else None,
-            "audio": trans.get(p_id, {}).get("en", {}).get("audio") if p_id else None,
-            "video": video_link 
+            "video": v_urls.get("L") or v_urls.get("M") or v_urls.get("S")
         }
 
-    # Struttura di output della lezione
+    # Helper compatibili con la tua struttura originale
+    def get_s(s_id): return clean_tags(get_val(s_id, "en") or get_val(s_id, course_lang))
+    def get_e_text(e_id): return get_e_data(e_id)["text_orig"]
+
+
     output = {
         "lesson_id": lesson_id,
-        "lesson_title": clean_tags(get_s(data["content"].get("title"))),
-        "lesson_description": clean_tags(get_s(data["content"].get("description"))),
+        "lesson_title": clean_tags(get_val(data["content"].get("title"), "en")),
+        "lesson_description": clean_tags(get_val(data["content"].get("description"), "en")),
         "units": []
     }
 
     def extract_exercises(structure_list):
-        """
-        Naviga ricorsivamente la struttura del JSON per trovare oggetti di classe 'exercise'.
-        Gestisce diversi tipi (t) estraendo i campi specifici per ognuno.
-        """
         found = []
         for item in structure_list:
             if item.get("class") == "exercise":
-                t = item.get("type")
+                old_t = item.get("type")
                 c = item.get("content", {})
+                
+                # --- MAPPATURA NOMI DESCRITTIVI ---
+                new_t = old_t
+                if old_t in ["26a", "26a_aud", "26a_img"]: new_t = "gap_fill_click"
+                elif old_t == "26b": new_t = "gap_fill_multiple"
+                elif old_t in ["27a", "27a_aud", "27a_img"]: new_t = "gap_fill_typing"
+                elif old_t == "24": new_t = "phrase_builder"
+                elif old_t == "28": new_t = "highlight_selection"
+                elif old_t in ["23", "23i"]: new_t = "true_false"
+                elif old_t == "multipleChoiceQuestion": new_t = "multiple_choice"
+                elif old_t == "matchUpEntity": new_t = "match_up"
+                elif old_t == "fill-gap-typing": new_t = "word_spelling"
+                elif old_t == "singleEntity": new_t = "flashcard"
+                elif old_t == "listenRepeat": new_t = "listen_repeat"
+                elif old_t == "speech_rec": new_t = "speech_recognition"
+                elif old_t == "writing": new_t = "writing"
+                elif old_t == "comprehension_video": new_t = "comprehension_video"
+                elif old_t == "comprehension_text": new_t = "comprehension_text"
+                elif old_t == "tip_table": new_t = "tip_table"
+                elif old_t == "tip": new_t = "tip"
+                elif old_t in ["dialogue", "review_34"]: new_t = "dialogue"
+ 
                 ex_out = {
                     "exercise_id": item.get("id"),
-                    "type": t,
-                    "instructions": clean_tags(get_s(c.get("instructions"))),
+                    "type": new_t,
+                    "instructions": clean_tags(get_val(c.get("instructions"), "en")),
                     "grammar_tag": c.get("grammar_topic_id")
                 }
 
-                # --- Tipo: singleEntity (Flashcards) e listenRepeat ---
-                if t in ["singleEntity", "listenRepeat"]:
+                if new_t == "flashcard":
                     mid = c.get("entity") or c.get("phrase")
                     if mid:
-                        ex_out["text"] = clean_tags(get_e_text(mid))
-                        ex_out["example_text"] = clean_tags(get_e_example(mid))
-                        ex_out.update(get_e_media(mid))
+                        ed = get_e_data(mid)
+                        ex_out.update({"text_orig": ed["text_orig"], "text_en": ed["text_en"], "audio_orig": ed["audio_orig"], "audio_en": ed["audio_en"], "image": ed["image"], "video": ed["video"]})
 
-                # --- Tipo: Comprensione Video o Testo ---
-                elif t in ["comprehension_video", "comprehension_text"]:
+                elif new_t in ["comprehension_video", "comprehension_text"]:
                     mid = c.get("entity")
-                    ex_out["content_title"] = clean_tags(get_s(c.get("title")))
-                    ex_out["content_body"] = clean_tags(get_e_text(mid))
-                    ex_out.update(get_e_media(mid))
+                    ed = get_e_data(mid)
+                    ex_out["content_title"] = get_s(c.get("title"))
+                    ex_out["content_body_orig"] = ed["text_orig"]
+                    ex_out["content_body_en"] = ed["text_en"]
+                    ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"], "video": ed["video"]})
 
-                # --- Tipo: listenRepeat (sovrascrittura specifica se necessario) ---
-                elif t == "listenRepeat":
+                elif new_t == "listen_repeat":
                     mid = c.get("phrase")
                     if mid:
-                        ex_out["full_text"] = clean_tags(get_e_text(mid))
-                        ex_out.update(get_e_media(mid))
-                
-                # --- Tipo: Riconoscimento Vocale ---
-                if t == "speech_rec":
+                        ed = get_e_data(mid)
+                        ex_out.update({
+                            "text_orig": ed["text_orig"],
+                            "text_en": ed["text_en"],
+                            "audio_orig": ed["audio_orig"],
+                            "image": ed["image"],
+                            "video": ed["video"]
+                        })
+                        ex_out["time_limit"] = item.get("timeLimit")
+
+                elif new_t == "speech_recognition":
                     mid = c.get("question")
-                    ex_out["text_to_speak"] = clean_tags(get_e_text(mid))
-                    ex_out.update(get_e_media(mid))
+                    ed = get_e_data(mid)
+                    ex_out["text_to_speak_orig"] = ed["text_orig"]
+                    ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"]})
 
-                # --- Tipo: Phrase Builder (metti in ordine) ---
-                elif t == "24":
-                    raw = get_e_text(c.get("sentence"))
-                    ex_out["full_text"] = clean_tags(raw)
-                    ex_out["tokens"] = extract_tokens(raw) or clean_tags(raw).split()
-                    ex_out.update(get_e_media(c.get("sentence")))
+                elif new_t == "word_spelling":
+                    m_id = c.get("entity") or c.get("sentence")
+                    ed = get_e_data(m_id)
+                    
+                    ex_out.update({
+                        "full_text_orig": ed["text_orig"],
+                        "full_text_en": ed["text_en"],
+                        "letters": extract_tokens(ed["raw_orig"]),
+                        "gap_sentence_orig": clean_tags(get_gap_sentence(ed["raw_orig"])),
+                        "audio_orig": ed["audio_orig"],
+                        "image": ed["image"]
+                    })
 
-                # --- Tipo: Selezione Multipla / Highlight (Coppie o liste) ---
-                elif t == "28":
-                    raw_sentences = [get_s(s_id) for s_id in c.get("sentences", [])]
+                elif new_t == "phrase_builder":
+                    raw = get_e_data(c.get("sentence"))
+                    ex_out["full_text_orig"] = raw["text_orig"]
+                    ex_out["tokens"] = extract_tokens(raw["raw_orig"]) or raw["text_orig"].split()
+                    ex_out.update({"image": raw["image"], "audio_orig": raw["audio_orig"]})
+
+                elif new_t == "highlight_selection":
                     processed_items = []
-                    for raw in raw_sentences:
-                        correct_tokens = re.findall(r'\[h\](.*?)\[/h\]', raw)
+                    for s_id in c.get("sentences", []):
+                        raw = get_val(s_id, course_lang)
+                        correct_raw = re.findall(r'\[h\](.*?)\[/h\]', raw)
                         clean_line = raw.replace('[h]', '').replace('[/h]', '')
                         all_tokens = clean_line.split()
-                        distractors = [t for t in all_tokens if t not in correct_tokens]
+                        correct_cleaned = [re.sub(r'[¿?¡!.,]', '', w).strip() for w in correct_raw]
+                        
+                        current_correct = []
+                        current_distractors = []
+                        
+                        for word in all_tokens:
+                            word_stripped = re.sub(r'[¿?¡!.,]', '', word).strip()
+                            
+                            if word_stripped in correct_cleaned:
+                                current_correct.append(word)
+                            else:
+                                current_distractors.append(word)
+                        
                         processed_items.append({
                             "all_options": all_tokens,
-                            "correct_options": correct_tokens,
-                            "distractors": distractors
+                            "correct_options": current_correct,
+                            "distractors": current_distractors
                         })
-                    ex_out["instructions"] = clean_tags(get_s(c.get("instructions")))
                     ex_out["selectable_data"] = processed_items
 
-                # --- Tipo: Tabelle Spiegazione (multi-colonna) ---
-                elif t == "tip_table":
-                    ex_out["table_title"] = clean_tags(get_s(c.get("text")))
+                elif new_t == "tip_table":
                     rows = []
                     ex_dict = c.get("examples", {})
                     for r_idx in sorted(ex_dict.keys(), key=int):
                         row = []
                         for c_idx in sorted(ex_dict[r_idx].keys(), key=int):
-                            s_id = ex_dict[r_idx][c_idx]
-                            row.append({
-                                "text": clean_tags(get_s(s_id)),
-                                "audio": get_s_audio(s_id)
-                            })
+                            sid = ex_dict[r_idx][c_idx]
+                            row.append({"text_orig": clean_tags(get_val(sid, course_lang)), "text_en": clean_tags(get_val(sid, "en")), "audio_orig": get_audio(sid, course_lang)})
                         rows.append(row)
                     ex_out["table_data"] = rows
 
-                # --- Tipo: Tip (box grammaticale semplice) ---
-                elif t == "tip":
-                    ex_out["tip_title"] = clean_tags(get_s(c.get("title")))
-                    ex_out["tip_text"] = clean_tags(get_s(c.get("text")))
-                    ex_out["examples"] = [{"text": clean_tags(get_s(sid)), "audio": get_s_audio(sid)} for sid in c.get("examples", [])]
+                elif new_t == "tip":
+                    ex_out["tip_title"] = get_s(c.get("title"))
+                    ex_out["tip_text_orig"] = clean_tags(get_val(c.get("text"), course_lang))
+                    ex_out["examples"] = [{"text_orig": clean_tags(get_val(sid, course_lang)), "audio_orig": get_audio(sid, course_lang)} for sid in c.get("examples", [])]
 
-                # --- Tipo: Vero/Falso (con o senza immagine) ---
-                if t in ["23", "23i"]:
-                    ex_out["statement_title"] = clean_tags(get_s(c.get("title")))
-                    ex_out["context_text"] = clean_tags(get_e_text(c.get("question")))
-                    ex_out["is_correct_true"] = c.get("answer")
-                    ex_out.update(get_e_media(c.get("question")))
+                if new_t == "true_false":
+                    ed = get_e_data(c.get("question"))
+                    ex_out["statement_title_en"] = get_s(c.get("title"))
+                    ex_out["context_text_orig"] = ed["text_orig"]
+                    ex_out["is_correct"] = c.get("answer")
+                    ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"]})
 
-                # --- Tipo: Fill the Gap con Scelta (Multiple Choice) ---
-                elif t in ["26a_aud", "26a_img"]:
+                elif new_t == "gap_fill_click":
                     mid = c.get("sentence")
-                    raw = get_e_text(mid)
-                    ex_out["full_text"] = clean_tags(raw)
-                    ex_out["gap_sentence"] = clean_tags(get_gap_sentence(raw))
-                    ex_out["correct_answer"] = extract_gap(raw)
-                    ex_out["options"] = [clean_tags(get_e_text(d)) for d in c.get("distractors", [])]
-                    ex_out.update(get_e_media(mid))
+                    ed = get_e_data(mid)
+                    sol = get_e_data(c.get("solution"))
+                    ex_out["full_text_orig"] = ed["text_orig"]
+                    ex_out["full_text_en"] = ed["text_en"]
+                    
+                    if "[k]" in ed["raw_orig"]: 
+                        ex_out["gap_sentence_orig"] = clean_tags(get_gap_sentence(ed["raw_orig"]))
+                        ex_out["correct_answer"] = extract_gap(ed["raw_orig"])
+                    else:
+                        ex_out["gap_sentence_orig"] = ed["text_orig"].replace(sol["text_orig"], "____")
+                        ex_out["correct_answer"] = sol["text_orig"]
+                    
+                    ex_out["options"] = [get_e_text(d) for d in c.get("distractors", [])]
+                    ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"] or sol["audio_orig"], "video": ed["video"]})
 
-                # --- Tipo: Fill the Gap Typing (Spelling lettere) ---
-                elif t == "fill-gap-typing":
-                    main_id = c.get("entity")
-                    raw_text = get_e_text(main_id)
-                    ex_out["full_text"] = clean_tags(raw_text)
-                    ex_out["letters"] = extract_tokens(raw_text)
-                    ex_out["gap_sentence"] = clean_tags(get_gap_sentence(raw_text))
-                    ex_out.update(get_e_media(main_id))
+                elif new_t == "multiple_choice":
+                    sol = get_e_data(c.get("solution"))
+                    qid = c.get("question")
+                    ex_out["solution_text_orig"] = sol["text_orig"]
+                    ex_out["solution_text_en"] = sol["text_en"]
+                    ex_out["options"] = [get_e_text(d) for d in c.get("distractors", [])]
+                    ex_out.update({
+                        "image": sol["image"], 
+                        "audio_orig": sol["audio_orig"] or get_audio_by_lang(qid, course_lang),
+                        "audio_en": sol["audio_en"] or get_audio_by_lang(qid, "en"),
+                        "audio_orig": sol["audio_orig"] or get_audio(c.get("question"), course_lang)})
 
-                # --- Tipo: Multiple Choice Question Classica ---
-                elif t == "multipleChoiceQuestion":
-                    sol_id = c.get("solution")
-                    ex_out["solution_text"] = clean_tags(get_e_text(sol_id))
-                    ex_out["options"] = [clean_tags(get_e_text(d)) for d in c.get("distractors", [])]
-                    ex_out.update(get_e_media(sol_id))
+                elif new_t == "match_up":
+                    pairs = []
+                    for l, r in zip(c.get("entities", []), c.get("matchingEntities", [])):
+                        pairs.append({"left_orig": get_e_text(l), "right_orig": get_e_text(r)})
+                    ex_out["pairs"] = pairs
 
-                # --- Tipo: MatchUp (abbinamento sinistra/destra) ---
-                elif t == "matchUpEntity":
-                    ex_out["pairs"] = [
-                        {"left": clean_tags(get_e_text(l)), "right": clean_tags(get_e_text(r))}
-                        for l, r in zip(c.get("entities", []), c.get("matchingEntities", []))
-                    ]
+                elif new_t == "gap_fill_multiple":
+                    mid = c.get("sentence") or c.get("entity")
+                    ed = get_e_data(mid)
+                    sol = get_e_data(c.get("solution"))
+                    if ed["text_orig"]:
+                        ex_out["full_text_orig"] = ed["text_orig"]
+                        ex_out["full_text_en"] = ed["text_en"]
+                        ex_out["gap_sentence_orig"] = clean_tags(get_gap_sentence(ed["raw_orig"])) or ed["text_orig"].replace(sol["text_orig"], "____")
+                        ex_out["correct_answers"] = extract_tokens(ed["raw_orig"]) or [sol["text_orig"]]
+                        ex_out["options"] = [get_e_text(d) for d in c.get("distractors", [])]
+                        ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"] or sol["audio_orig"]})
 
-                # --- Tipo: Fill the Gap (Testo standard) ---
-                elif t in ["26a", "26b"]:
-                    main_id = c.get("sentence") or c.get("entity")
-                    raw_text = get_e_text(main_id)
-                    if raw_text:
-                        ex_out["full_text"] = clean_tags(raw_text)
-                        ex_out["gap_sentence"] = clean_tags(get_gap_sentence(raw_text))
-                        correct_answers = extract_tokens(raw_text)
-                        if t == "fill-gap-typing":
-                            ex_out["letters"] = correct_answers
-                        else:
-                            ex_out["correct_answers"] = correct_answers
-                        ex_out["options"] = [clean_tags(get_e_text(d)) for d in c.get("distractors", [])]
-                        ex_out.update(get_e_media(main_id))
-
-                # --- Tipo: Produzione Libera (Writing) ---
-                elif t == "writing":
-                    ex_out["hint"] = clean_tags(get_s(c.get("hint")))
+                elif new_t == "writing":
+                    ex_out["hint_orig"] = clean_tags(get_val(c.get("hint"), course_lang))
+                    ex_out["hint_en"] = clean_tags(get_val(c.get("hint"), "en"))
                     ex_out["word_counter"] = c.get("wordCounter")
                     ex_out["images"] = c.get("images", [])
 
-                # --- Tipo: Typing Puro (Tastiera, dettato o immagine) ---
-                if t in ["27a", "27a_img", "27a_aud"]:
-                    mid = c.get("sentence")
-                    raw = get_e_text(mid)
-                    ex_out["full_text"] = clean_tags(raw)
-                    ex_out["gap_sentence"] = clean_tags(get_gap_sentence(raw))
-                    ex_out["correct_answers_to_type"] = extract_tokens(raw)
-                    ex_out.update(get_e_media(mid))
-                    if c.get("hint"): ex_out["hint"] = clean_tags(get_s(c.get("hint")))
+                if new_t == "gap_fill_typing":
+                    raw_ans = c.get("correct_answers_to_type")
+                    if isinstance(raw_ans, list) and len(raw_ans) > 0:
+                        raw_ans = raw_ans[0]
+                    else:
+                        raw_ans = ""
+                    clean_answers = [a.strip() for a in str(raw_ans).split('|')] if raw_ans else []
 
-                # Aggiunta spiegazione finale dell'esercizio (se presente)
-                explanation = get_s(c.get("correctAnswer"))
-                if explanation: ex_out["explanation"] = clean_tags(explanation)
+                    mid = c.get("sentence") 
+                    ed = get_e_data(mid) 
+                    ex_out["full_text_orig"] = ed["text_orig"]
+                    ex_out["gap_sentence_orig"] = clean_tags(get_gap_sentence(ed["raw_orig"]))
+                    ex_out["correct_answers"] = clean_answers,
+                    ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"]})
+                    if c.get("hint"): ex_out["hint_en"] = get_s(c.get("hint"))
+
+                # --- CORREZIONE DEFINITIVA: DIALOGUE & REVIEW_34 CON OPZIONI ---
+                if new_t =="dialogue":
+                    script_data = []
+                    # 1. Estraiamo le battute e identifichiamo i buchi
+                    for line_item in c.get("script", []):
+                        l_id = line_item.get("line")
+                        raw_orig = get_val(l_id, course_lang)
+                        
+                        line_entry = {
+                            "character_id": line_item.get("character_id"),
+                            "text_orig": clean_tags(raw_orig),
+                            "text_en": clean_tags(get_val(l_id, "en")),
+                            "audio_orig": get_audio(l_id, course_lang)
+                        }
+
+                        # Se ci sono tag [k], creiamo il buco e salviamo la risposta corretta
+                        if "[k]" in raw_orig:
+                            line_entry["gap_sentence_orig"] = clean_tags(re.sub(r'\[k\].*?\[/k\]', '____', raw_orig))
+                            line_entry["correct_answer"] = clean_tags(re.search(r'\[k\](.*?)\[/k\]', raw_orig).group(1))
+                            line_entry["is_exercise_line"] = True
+                        else:
+                            line_entry["is_exercise_line"] = False
+
+                        script_data.append(line_entry)
+                    
+                    ex_out["dialogue_script"] = script_data
+                    
+                    # 2. DOVE SONO LE OPZIONI? Eccole qui:
+                    # Estraiamo i distrattori (le altre scelte sbagliate)
+                    distractors = [clean_tags(get_e_text(d)) for d in c.get("distractors", [])]
+                    
+                    # Le opzioni totali per l'utente saranno: tutte le correct_answers + i distractors
+                    all_correct_answers = [line["correct_answer"] for line in script_data if line.get("is_exercise_line")]
+                    
+                    # Creiamo una lista unica senza duplicati che il compagno userà per la UI
+                    ex_out["all_selectable_options"] = list(set(all_correct_answers + distractors))
+                    
+                    # 3. Personaggi
+                    chars = {}
+                    for c_id, c_info in c.get("characters", {}).items():
+                        chars[c_id] = {
+                            "name": clean_tags(get_val(c_info.get("name"), course_lang)),
+                            "image": c_info.get("image"),
+                            "role": c_info.get("role")
+                        }
+                    ex_out["characters"] = chars
+
+                explanation = get_val(c.get("correctAnswer"), "en")
+                if explanation: ex_out["explanation_en"] = clean_tags(explanation)
                 found.append(ex_out)
             
-            # Se l'item contiene una sottostruttura, continua la ricerca degli esercizi
             elif "structure" in item:
                 found.extend(extract_exercises(item["structure"]))
         return found
 
-    # Iterazione sulle Unit della lezione (Grammar, Vocabulary, Checkpoint, etc.)
     for unit in data.get("structure", []):
         u_out = {
             "unit_type": unit.get("type"),
@@ -254,37 +390,21 @@ def process_file(input_path):
     return output
 
 def migrate_courses(source_root, target_root):
-    """
-    Scansiona ricorsivamente la cartella sorgente, processa ogni JSON trovato
-    e salva l'output nella cartella target mantenendo la stessa gerarchia di directory.
-    """
     for root, dirs, files in os.walk(source_root):
         for file in files:
             if file.endswith(".json"):
                 input_file_path = os.path.join(root, file)
-                
-                # Mappa il percorso relativo per ricreare le cartelle (es: en/A1/...)
                 rel_path = os.path.relpath(root, source_root)
                 target_dir = os.path.join(target_root, rel_path)
-                
-                if not os.path.exists(target_dir):
-                    os.makedirs(target_dir)
-
+                if not os.path.exists(target_dir): os.makedirs(target_dir)
                 try:
-                    # Parsing del file e scrittura del nuovo JSON pulito
                     cleaned_data = process_file(input_file_path)
                     target_file_path = os.path.join(target_dir, file)
-                    
                     with open(target_file_path, 'w', encoding='utf-8') as f:
                         json.dump(cleaned_data, f, indent=2, ensure_ascii=False)
-                    
                     print(f"Cleaned: {file}")
-                except Exception as e:
-                    print(f"Errore in {input_file_path}: {e}")
+                except Exception as e: print(f"Errore in {input_file_path}: {e}")
 
-# --- Configurazione Percorsi ---
 SOURCE = "00-raw_courses"
 TARGET = "01-cleaned_courses"
-
-# Avvio del processo
 migrate_courses(SOURCE, TARGET)

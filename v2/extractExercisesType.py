@@ -45,13 +45,13 @@ def extract_exercise_types(root_dir):
     return all_found_types, exercise_coverage
 
 # --- CONFIGURAZIONE ---
-root_path = "00-raw_courses/en" 
+root_path = "00-raw_courses/es" 
 
 found_types, coverage_map = extract_exercise_types(root_path)
 
 print("\n--- TIPI DI ESERCIZI TROVATI ---")
 if not found_types:
-    print("Nessun esercizio trovato. Controlla che il percorso root_path sia corretto.")
+    print("Nessun esercizio trovato")
 else:
     for ex_type in sorted(found_types):
         count = len(coverage_map[ex_type])
@@ -60,10 +60,10 @@ else:
 
 
 if found_types:
-    print("\n⚠️  Tipi NUOVI trovati (da aggiungere al cleaning):")
+    print("\n⚠️  Tipi trovati:")
     for m in sorted(found_types):
         # Mostra anche un esempio di file dove trovarlo per analizzarlo
         example_file = list(coverage_map[m])[0]
         print(f"  [!] {m:<20} -> Esempio: {example_file}")
 else:
-    print("\n✅ Tutti i tipi trovati sono già coperti dallo script di pulizia.")
+    print("\nNessun tipo trovao.")
