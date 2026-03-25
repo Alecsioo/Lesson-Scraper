@@ -12,6 +12,7 @@ Scrapes course content and saves raw lesson JSON files to disk, organized as:
 - An `.env` file containing the required URLs and an access token cookie (see below).
 
 ### Python dependencies
+docker run --publish=7474:7474 --publish=7687:7687 --volume=$HOME/neo4j/data:/data neo4j
 
 This script uses:
 

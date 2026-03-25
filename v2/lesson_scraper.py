@@ -9,6 +9,7 @@ import questionary
 from pathlib import Path
 from dotenv import load_dotenv
 from pathvalidate import sanitize_filename
+from tqdm import tqdm
 from graphql_scraper import extract_chapters_by_level
 from v2.classes import Course, Lesson, Level, Chapter
 
@@ -147,8 +148,14 @@ def main() -> int:
     course_packs_for_selected_language = languages_to_course_packs[selected_language]
 
     base_course_pack = os.getenv("BASE_COURSE_PACK_URL")
+    base_lesson_url = os.getenv("BASE_LESSON_URL")
     base = Path("00-raw_courses") / selected_language
     base.mkdir(parents=True, exist_ok=True)
+
+    # First pass: resolve the full course structure for each pack so we know the total
+    # lesson count upfront. This is required to render a meaningful progress bar with
+    # percentage and ETA for each pack.
+    course_pack_items: list[tuple[str, Path, list[tuple[Path, object]]]] = []
 
     for course_pack in course_packs_for_selected_language:
         # Create one subdirectory for each course pack
@@ -178,7 +185,7 @@ def main() -> int:
         # From here onwards we work with our classes
         course = map_to_course(course_structure, chapters_by_level)
 
-        base_lesson_url = os.getenv("BASE_LESSON_URL")
+        lessons_for_pack: list[tuple[Path, object]] = []
 
         for lvl in course.levels:
             lvl_subdir = course_pack_path / sanitize_filename(lvl.id, platform.system())
@@ -191,18 +198,45 @@ def main() -> int:
                 chapter_index += 1
                 chapter_subdir.mkdir(parents=True, exist_ok=True)
                 for lesson in chapter.lessons:
-                    # Build the lesson URL dynamically and retrieve the associated lesson JSON
-                    lesson_url = base_lesson_url.format(lesson_id=lesson.id, lang=selected_language)
+                    lessons_for_pack.append((chapter_subdir, lesson))
 
-                    raw_response = session.get(lesson_url)
-                    assert_response_ok(raw_response)
-                    raw_json = raw_response.json()
+        course_pack_items.append((course_pack, course_pack_path, lessons_for_pack))
 
-                    text = json.dumps(raw_json, ensure_ascii=False)
-                    out_path = chapter_subdir / sanitize_filename(f"{lesson.id}.json", platform.system())
-                    out_path.write_text(text, encoding="utf-8")
+    # Create one persistent progress bar per course pack, each pinned to its own terminal
+    # row via `position`. `leave=True` keeps finished bars visible so the final state is readable.
+    pack_bars = [
+        tqdm(
+            total=len(lessons),
+            desc=f"{pack:<30}",  # left-aligned, fixed width so bars line up
+            unit="lesson",
+            position=index,
+            leave=True,
+        )
+        for index, (pack, _, lessons) in enumerate(course_pack_items)
+    ]
+
+    # Second pass: download every lesson and advance that pack's bar on each completion
+    try:
+        for (course_pack, course_pack_path, lessons_for_pack), pbar in zip(course_pack_items, pack_bars):
+            for chapter_subdir, lesson in lessons_for_pack:
+                # Build the lesson URL dynamically and retrieve the associated lesson JSON
+                lesson_url = base_lesson_url.format(lesson_id=lesson.id, lang=selected_language)
+
+                raw_response = session.get(lesson_url)
+                assert_response_ok(raw_response)
+                raw_json = raw_response.json()
+
+                text = json.dumps(raw_json, ensure_ascii=False)
+                out_path = chapter_subdir / sanitize_filename(f"{lesson.id}.json", platform.system())
+                out_path.write_text(text, encoding="utf-8")
+
+                pbar.update(1)
+    finally:
+        for pbar in pack_bars:
+            pbar.close()
 
     return 0
+
 
 
 main()
