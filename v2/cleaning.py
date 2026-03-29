@@ -148,6 +148,7 @@ def process_file(input_path):
                     "exercise_id": item.get("id"),
                     "type": new_t,
                     "instructions": clean_tags(get_val(c.get("instructions"), "en")),
+                    "instructions": get_s(c.get("instructions")),
                     "grammar_tag": c.get("grammar_topic_id")
                 }
 
@@ -206,28 +207,22 @@ def process_file(input_path):
                 elif new_t == "highlight_selection":
                     processed_items = []
                     for s_id in c.get("sentences", []):
-                        raw = get_val(s_id, course_lang)
-                        correct_raw = re.findall(r'\[h\](.*?)\[/h\]', raw)
+                        raw = get_val(s_id, course_lang) 
+                        
+                        correct_tokens = re.findall(r'\[h\](.*?)\[/h\]', raw)
+                        
                         clean_line = raw.replace('[h]', '').replace('[/h]', '')
                         all_tokens = clean_line.split()
-                        correct_cleaned = [re.sub(r'[¿?¡!.,]', '', w).strip() for w in correct_raw]
                         
-                        current_correct = []
-                        current_distractors = []
-                        
-                        for word in all_tokens:
-                            word_stripped = re.sub(r'[¿?¡!.,]', '', word).strip()
-                            
-                            if word_stripped in correct_cleaned:
-                                current_correct.append(word)
-                            else:
-                                current_distractors.append(word)
+                        distractors = [t for t in all_tokens if t not in correct_tokens]
                         
                         processed_items.append({
                             "all_options": all_tokens,
-                            "correct_options": current_correct,
-                            "distractors": current_distractors
+                            "correct_options": correct_tokens,
+                            "distractors": distractors
                         })
+                    
+                    ex_out["instructions"] = get_s(c.get("instructions"))
                     ex_out["selectable_data"] = processed_items
 
                 elif new_t == "tip_table":
@@ -246,7 +241,7 @@ def process_file(input_path):
                     ex_out["tip_text_orig"] = clean_tags(get_val(c.get("text"), course_lang))
                     ex_out["examples"] = [{"text_orig": clean_tags(get_val(sid, course_lang)), "audio_orig": get_audio(sid, course_lang)} for sid in c.get("examples", [])]
 
-                if new_t == "true_false":
+                elif new_t == "true_false":
                     ed = get_e_data(c.get("question"))
                     ex_out["statement_title_en"] = get_s(c.get("title"))
                     ex_out["context_text_orig"] = ed["text_orig"]
@@ -282,10 +277,23 @@ def process_file(input_path):
                         "audio_en": sol["audio_en"] or get_audio_by_lang(qid, "en"),
                         "audio_orig": sol["audio_orig"] or get_audio(c.get("question"), course_lang)})
 
+
                 elif new_t == "match_up":
                     pairs = []
-                    for l, r in zip(c.get("entities", []), c.get("matchingEntities", [])):
-                        pairs.append({"left_orig": get_e_text(l), "right_orig": get_e_text(r)})
+                    left_entities = c.get("entities", [])
+                    right_entities = c.get("matchingEntities", [])
+                    
+                    for l_id, r_id in zip(left_entities, right_entities):
+                        l_data = get_e_data(l_id)
+                        
+                        r_data = get_e_data(r_id)
+                        right_text = r_data["text_en"] if r_data["text_en"] else r_data["text_orig"]
+                        
+                        pairs.append({
+                            "left_orig": l_data["text_orig"],
+                            "right_orig": right_text  
+                        })
+                    
                     ex_out["pairs"] = pairs
 
                 elif new_t == "gap_fill_multiple":
@@ -306,26 +314,28 @@ def process_file(input_path):
                     ex_out["word_counter"] = c.get("wordCounter")
                     ex_out["images"] = c.get("images", [])
 
-                if new_t == "gap_fill_typing":
-                    raw_ans = c.get("correct_answers_to_type")
-                    if isinstance(raw_ans, list) and len(raw_ans) > 0:
-                        raw_ans = raw_ans[0]
-                    else:
-                        raw_ans = ""
-                    clean_answers = [a.strip() for a in str(raw_ans).split('|')] if raw_ans else []
+                elif new_t == "gap_fill_typing":
+                    m_id = c.get("sentence") or c.get("entity")
+                    ed = get_e_data(m_id) 
+        
+                    tokens = extract_tokens(ed["raw_orig"])
+                    
+                    if not tokens:
+                        raw_ans = c.get("correct_answers_to_type", [""])[0] if isinstance(c.get("correct_answers_to_type"), list) else ""
+                        tokens = [a.strip() for a in str(raw_ans).split('|')] if raw_ans else []
 
-                    mid = c.get("sentence") 
-                    ed = get_e_data(mid) 
-                    ex_out["full_text_orig"] = ed["text_orig"]
-                    ex_out["gap_sentence_orig"] = clean_tags(get_gap_sentence(ed["raw_orig"]))
-                    ex_out["correct_answers"] = clean_answers,
-                    ex_out.update({"image": ed["image"], "audio_orig": ed["audio_orig"]})
-                    if c.get("hint"): ex_out["hint_en"] = get_s(c.get("hint"))
+                    ex_out.update({
+                        "full_text_orig": ed["text_orig"],
+                        "gap_sentence_orig": clean_tags(get_gap_sentence(ed["raw_orig"])),
+                        "correct_answers": tokens,
+                        "audio_orig": ed["audio_orig"],
+                        "image": ed["image"],
+                        "hint_en": get_s(c.get("hint"))
+                    })
 
-                # --- CORREZIONE DEFINITIVA: DIALOGUE & REVIEW_34 CON OPZIONI ---
-                if new_t =="dialogue":
+               
+                elif new_t == "dialogue":
                     script_data = []
-                    # 1. Estraiamo le battute e identifichiamo i buchi
                     for line_item in c.get("script", []):
                         l_id = line_item.get("line")
                         raw_orig = get_val(l_id, course_lang)
@@ -334,13 +344,16 @@ def process_file(input_path):
                             "character_id": line_item.get("character_id"),
                             "text_orig": clean_tags(raw_orig),
                             "text_en": clean_tags(get_val(l_id, "en")),
-                            "audio_orig": get_audio(l_id, course_lang)
+                            "audio_orig": get_audio_by_lang(l_id, course_lang)
                         }
 
-                        # Se ci sono tag [k], creiamo il buco e salviamo la risposta corretta
+                        # Se ci sono tag [k], estraiamo TUTTE le occorrenze
                         if "[k]" in raw_orig:
+                            # Estraiamo tutti i gruppi [k]...[/k] in una lista
+                            all_answers = extract_tokens(raw_orig) # Ritorna es: ["carrera", "conseguir"]
+                            
                             line_entry["gap_sentence_orig"] = clean_tags(re.sub(r'\[k\].*?\[/k\]', '____', raw_orig))
-                            line_entry["correct_answer"] = clean_tags(re.search(r'\[k\](.*?)\[/k\]', raw_orig).group(1))
+                            line_entry["correct_answers"] = [a.strip() for a in all_answers]
                             line_entry["is_exercise_line"] = True
                         else:
                             line_entry["is_exercise_line"] = False
@@ -349,25 +362,16 @@ def process_file(input_path):
                     
                     ex_out["dialogue_script"] = script_data
                     
-                    # 2. DOVE SONO LE OPZIONI? Eccole qui:
-                    # Estraiamo i distrattori (le altre scelte sbagliate)
+                    # Raccolta di tutte le opzioni possibili (risposte + distrattori)
+                    all_solutions = []
+                    for line in script_data:
+                        if line.get("is_exercise_line"):
+                            all_solutions.extend(line["correct_answers"])
+
                     distractors = [clean_tags(get_e_text(d)) for d in c.get("distractors", [])]
+                    ex_out["all_selectable_options"] = list(set(all_solutions + distractors))
                     
-                    # Le opzioni totali per l'utente saranno: tutte le correct_answers + i distractors
-                    all_correct_answers = [line["correct_answer"] for line in script_data if line.get("is_exercise_line")]
-                    
-                    # Creiamo una lista unica senza duplicati che il compagno userà per la UI
-                    ex_out["all_selectable_options"] = list(set(all_correct_answers + distractors))
-                    
-                    # 3. Personaggi
-                    chars = {}
-                    for c_id, c_info in c.get("characters", {}).items():
-                        chars[c_id] = {
-                            "name": clean_tags(get_val(c_info.get("name"), course_lang)),
-                            "image": c_info.get("image"),
-                            "role": c_info.get("role")
-                        }
-                    ex_out["characters"] = chars
+                    ex_out["characters"] = {cid: {"name": get_s(info.get("name")), "image": info.get("image"), "role": info.get("role")} for cid, info in c.get("characters", {}).items()}
 
                 explanation = get_val(c.get("correctAnswer"), "en")
                 if explanation: ex_out["explanation_en"] = clean_tags(explanation)
