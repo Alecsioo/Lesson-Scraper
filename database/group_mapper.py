@@ -1,9 +1,13 @@
+import os
 from pathlib import Path
 import json
 from tqdm import tqdm
 from database import driver, verify_connection, close_driver
+from dotenv import load_dotenv
 
-DATABASE = "neo4j"
+load_dotenv()
+
+DATABASE = os.getenv("NEO4J_DATABASE")
 PATH = "v2/01-cleaned_courses/en"
 TYPES = {
     "listen_repeat",
@@ -47,7 +51,6 @@ def make_label_node(exercise: dict, label_fields: list[str]) -> dict | None:
         value = exercise.get(field)
         if value:
             return {
-                "kind": field,
                 "value": value,
             }
     return None
@@ -66,13 +69,11 @@ def make_item_nodes(exercise: dict, item_fields: list[str]) -> list[dict]:
             for item in value:
                 if item:
                     items.append({
-                        "kind": field,
                         "value": item,
                     })
         else:
             if value:
                 items.append({
-                    "kind": field,
                     "value": value,
                 })
 
@@ -140,13 +141,11 @@ def import_group(tx, item: dict):
 
     query = f"""
     MERGE (label:ContentNode {{
-        kind: $label_kind,
         value: $label_value
     }})
     WITH label
     UNWIND $items AS item
         MERGE (content:ContentNode {{
-            kind: item.kind,
             value: item.value
         }})
         MERGE (label)-[r:{relationship_type} {{
@@ -157,7 +156,7 @@ def import_group(tx, item: dict):
 
     tx.run(
         query,
-        label_kind=item["label"]["kind"],
+        label_kind=item["label"],
         label_value=item["label"]["value"],
         items=item["items"],
         exercise_type=item["exercise_type"],

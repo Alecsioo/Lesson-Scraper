@@ -1,9 +1,13 @@
+import os
 from pathlib import Path
 import json
 from tqdm import tqdm
 from database import driver, verify_connection, close_driver
+from dotenv import load_dotenv
 
-DATABASE = "neo4j"
+load_dotenv()
+
+DATABASE = os.getenv("NEO4J_DATABASE")
 PATH = "v2/01-cleaned_courses/en"
 TYPE = "match_up"
 
@@ -59,7 +63,7 @@ def import_match(tx, item: dict):
         """
         MERGE (left:ContentNode {text: $left_text})
         MERGE (right:ContentNode {text: $right_text})
-        MERGE (left)-[:MATCHES_WITH {family: "PAIR", exercise_type: "matchUpEntity"}]->(right)
+        MERGE (left)-[:MATCHES_WITH]->(right)
         """,
         left_text=item["left_text"],
         right_text=item["right_text"],
