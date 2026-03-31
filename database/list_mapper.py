@@ -1,10 +1,14 @@
 from pathlib import Path
 import json
 from tqdm import tqdm
-from database.database import driver, verify_connection, close_driver
+from database.database import driver, verify_connection
+from dotenv import load_dotenv
+import os
 
-DATABASE = "neo4j"
-PATH = "01-cleaned_courses/es"
+load_dotenv()
+
+DATABASE = os.getenv("NEO4J_DATABASE")
+PATH = "01-cleaned_courses"
 TYPES = {"phrase_builder", "word_spelling", "gap_fill_typing"}
 
 

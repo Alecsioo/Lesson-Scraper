@@ -2,9 +2,13 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 from database.database import driver, verify_connection, close_driver
+import os
+from dotenv import load_dotenv
 
-DATABASE = "neo4j"
-PATH = "01-cleaned_courses/es"
+load_dotenv()
+
+DATABASE = os.getenv("NEO4J_DATABASE")
+PATH = "01-cleaned_courses"
 TYPES = {"true_false", "multiple_choice", "highlight_selection"}
 
 
