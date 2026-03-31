@@ -3,9 +3,13 @@ import re
 from pathlib import Path
 from tqdm import tqdm
 from database.database import driver, verify_connection, close_driver
+import os
+from dotenv import load_dotenv
 
-DATABASE = "neo4j"
-PATH = "v2/01-cleaned_courses/es"
+load_dotenv()
+
+DATABASE = os.getenv("NEO4J_DATABASE")
+PATH = "01-cleaned_courses"
 TYPES = {"gap_fill_click", "gap_fill_multiple"}
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -123,6 +127,7 @@ def run_import(base_dir: str):
             session.execute_write(import_gap_fill, item)
 
     tqdm.write("[INFO] Import complete")
+
 
 if __name__ == "__main__":
     raise SystemExit(run_import(PATH))
