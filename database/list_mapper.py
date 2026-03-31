@@ -6,7 +6,7 @@ from database import driver, verify_connection, close_driver
 
 DATABASE = "neo4j"
 PATH = "v2/01-cleaned_courses/es"
-TYPES = {"phrase_builder", "word_spelling", "gap_fill_typing"}
+TYPES = {"phrase_builder", "word_spelling", "gap_fill_typing", "highlight_selection"}
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -58,6 +58,26 @@ def extract_items(exercise: dict, exercise_type: str) -> list[str] | None:
                     "isCorrect": (g_char == "_") # True se c'è l'underscore
                 })
             return full_chain
+        
+    if exercise_type == "highlight_selection":
+        full_chain = []
+        blocks = exercise.get("selectable_data", [])
+        
+        for i, block in enumerate(blocks):
+            correct_set = set(block.get("correct_options", []))
+            
+            for word in block.get("all_options", []):
+                if word is None: continue
+                full_chain.append({
+                    "text": str(word),
+                    "isCorrect": word in correct_set
+                })
+            
+            # Se c'è un blocco successivo, aggiungiamo un separatore (es. a capo)
+            if i < len(blocks) - 1:
+                full_chain.append({"text": "\n", "isCorrect": False})
+                
+        return full_chain
             
     return None
 
@@ -115,7 +135,7 @@ def extract_lists(base_dir: str) -> list[dict]:
 # ── import ────────────────────────────────────────────────────────────────────
 
 def import_list(tx, item: dict):
-    nodes_data = item["items"] # Lista di dict [{"text": "...", "isCorrect": ...}, ...]
+    nodes_data = item["items"]
     ex_id = item["exercise_id"]
     ex_type = item["exercise_type"]
 
@@ -124,8 +144,9 @@ def import_list(tx, item: dict):
             """
             MERGE (a:ContentNode {text: $text_a})
             MERGE (b:ContentNode {text: $text_b})
-            WITH a, b
             MERGE (a)-[r:NEXT {exercise_id: $ex_id, idx: $idx}]->(b)
+            
+            // 3. Imposta le proprietà sulla relazione
             SET r.family = "LIST",
                 r.exercise_type = $ex_type,
                 r.a_isCorrect = $a_corr,
