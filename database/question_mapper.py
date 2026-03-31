@@ -16,7 +16,6 @@ def make_question_text(exercise: dict, exercise_type: str) -> str | None:
             "context": exercise.get("context_text_orig"),
             "statement": exercise.get("statement_title_en")
         }
-    # Per multiple_choice usiamo instructions come testo della domanda
     return exercise.get("instructions")
 
 def make_answers(exercise: dict, exercise_type: str) -> list[dict] | None:
@@ -25,12 +24,12 @@ def make_answers(exercise: dict, exercise_type: str) -> list[dict] | None:
     """
     if exercise_type == "multiple_choice":
         answers = []
-        correct = exercise.get("solution_text_orig")
-        if correct:
-            answers.append({"text": correct, "correct": True})
+        isCorrect = exercise.get("solution_text_orig")
+        if isCorrect:
+            answers.append({"text": isCorrect, "isCorrect": True})
         for i, opt in enumerate(exercise.get("options", []), 1):
             if opt:
-                answers.append({"text": str(opt), "correct": False})
+                answers.append({"text": str(opt), "isCorrect": False})
         return answers
 
     return None
@@ -82,25 +81,20 @@ def import_question(tx, item: dict):
     ex_type = item["exercise_type"]
     
     if ex_type == "true_false":
-        # Il nodo radice unisce Contesto e Affermazione per dare senso alla domanda
         q_data = item["question_text"]
         root_text = f"{q_data['context']}\n\n{q_data['statement']}"
         
-        # Generiamo le due opzioni standard
         is_correct = item["is_correct"]
         answers = [
-            {"text": "True", "correct": is_correct},
-            {"text": "False", "correct": not is_correct}
+            {"text": "True", "isCorrect": is_correct},
+            {"text": "False", "isCorrect": not is_correct}
         ]
     else:
-        # Multiple Choice standard
         root_text = item["question_text"]
         answers = item["answers"]
 
-    # 1. MERGE del nodo radice (Solo TEXT)
     tx.run("MERGE (q:ContentNode {text: $root_text})", root_text=root_text)
 
-    # 2. Creazione delle relazioni HAS_ANSWER
     for ans in answers:
         tx.run("""
             MATCH (q:ContentNode {text: $root_text})
@@ -108,13 +102,13 @@ def import_question(tx, item: dict):
             MERGE (q)-[r:HAS_ANSWER {exercise_id: $ex_id}]->(a)
             SET r.family = "QUESTION",
                 r.exercise_type = $ex_type,
-                r.correct = $correct
+                r.isCorrect = $isCorrect
             """, 
             root_text=root_text,
             ans_text=ans["text"],
             ex_id=ex_id,
             ex_type=ex_type,
-            correct=ans["correct"]
+            isCorrect=ans["isCorrect"]
         )
 
 def run_import(base_dir: str):

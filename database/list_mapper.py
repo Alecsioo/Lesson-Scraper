@@ -21,27 +21,22 @@ def extract_items(exercise: dict, exercise_type: str) -> list[str] | None:
                        (two nodes: complete sentence -> gapped version)
     """
     if exercise_type == "phrase_builder":
-        # Nel phrase builder, tutti i token sono da ricomporre
         tokens = exercise.get("tokens", [])
-        return [{"text": t, "isCorrect": True} for t in tokens if t]
+        return [{"text": t, "isTarget": True} for t in tokens if t]
 
     if exercise_type == "gap_fill_typing":
         gap_sentence = exercise.get("gap_sentence_orig", "")
-        # Prendiamo la prima risposta corretta. Esempio: "Hay una"
         solution = exercise.get("correct_answers", [""])[0] 
         
         if gap_sentence:
-            # Regex che cattura parole, punteggiatura spagnola o il gap ____
             parts = re.findall(r"_+|[¿?¡!\wáéíóúüñ]+", gap_sentence)
             
             tokens_with_metadata = []
             for p in parts:
                 if p.startswith('_'):
-                    # Se è il gap, inseriamo la SOLUZIONE e segnamo isCorrect=True
-                    tokens_with_metadata.append({"text": solution, "isCorrect": True})
+                    tokens_with_metadata.append({"text": solution, "isTarget": True})
                 else:
-                    # Se è testo normale, lo lasciamo così com'è
-                    tokens_with_metadata.append({"text": p, "isCorrect": False})
+                    tokens_with_metadata.append({"text": p, "isTarget": False})
             
             return tokens_with_metadata if tokens_with_metadata else None
 
@@ -51,11 +46,10 @@ def extract_items(exercise: dict, exercise_type: str) -> list[str] | None:
         
         if full and gap:
             full_chain = []
-            # Ora gap e full hanno ESATTAMENTE la stessa lunghezza
             for f_char, g_char in zip(full, gap):
                 full_chain.append({
                     "text": f_char,
-                    "isCorrect": (g_char == "_") # True se c'è l'underscore
+                    "isTarget": (g_char == "_") 
                 })
             return full_chain
         
@@ -70,12 +64,11 @@ def extract_items(exercise: dict, exercise_type: str) -> list[str] | None:
                 if word is None: continue
                 full_chain.append({
                     "text": str(word),
-                    "isCorrect": word in correct_set
+                    "isTarget": word in correct_set
                 })
             
-            # Se c'è un blocco successivo, aggiungiamo un separatore (es. a capo)
             if i < len(blocks) - 1:
-                full_chain.append({"text": "\n", "isCorrect": False})
+                full_chain.append({"text": "\n", "isTarget": False})
                 
         return full_chain
             
@@ -125,7 +118,7 @@ def extract_lists(base_dir: str) -> list[dict]:
                 results.append({
                     "exercise_type": exercise_type, 
                     "items": items, 
-                    "exercise_id": exercise.get("exercise_id") # <--- AGGIUNGI QUESTO
+                    "exercise_id": exercise.get("exercise_id") 
                 })
 
     tqdm.write(f"[INFO] Extracted {len(results)} lists total")
@@ -149,13 +142,13 @@ def import_list(tx, item: dict):
             // 3. Imposta le proprietà sulla relazione
             SET r.family = "LIST",
                 r.exercise_type = $ex_type,
-                r.a_isCorrect = $a_corr,
-                r.b_isCorrect = $b_corr
+                r.a_isTarget = $a_target,
+                r.b_isTarget = $b_target
             """,
             text_a=nodes_data[i]["text"],
             text_b=nodes_data[i+1]["text"],
-            a_corr=nodes_data[i]["isCorrect"],
-            b_corr=nodes_data[i+1]["isCorrect"],
+            a_target=nodes_data[i]["isTarget"],
+            b_target=nodes_data[i+1]["isTarget"],
             ex_id=ex_id,
             ex_type=ex_type,
             idx=i
