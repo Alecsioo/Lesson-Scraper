@@ -36,9 +36,14 @@ def extract_gap(text):
     return match.group(1) if match else None
 
 def get_gap_sentence(text):
-    """Crea la frase con il 'buco' ____."""
+    """Crea la frase con un numero di '_' pari alla lunghezza della parola nel tag [k]."""
     if not text: return None
-    return re.sub(r'(\[k\].*?\[/k\])+', '____', text)
+    
+    def replace_with_single_underscore(match):
+        word = match.group(1)
+        return "_" * len(word)
+
+    return re.sub(r'\[k\](.*?)\[/k\]', replace_with_single_underscore, text)
 
 def process_file(input_path):
     with open(input_path, 'r', encoding='utf-8') as f:
@@ -410,5 +415,5 @@ def migrate_courses(source_root, target_root):
                 except Exception as e: print(f"Errore in {input_file_path}: {e}")
 
 SOURCE = "00-raw_courses"
-TARGET = "01-cleaned_courses"
+TARGET = "v2/01-cleaned_courses"
 migrate_courses(SOURCE, TARGET)
