@@ -1,7 +1,11 @@
 import json
 import re
-import os
 import html
+from tqdm import tqdm
+from pathlib import Path
+
+SOURCE = "00-raw_courses"
+TARGET = "01-cleaned_courses"
 
 def clean_tags(text):
     """Rimuove tag e normalizza gli spazi senza spezzare le parole coniugate."""
@@ -398,22 +402,27 @@ def process_file(input_path):
 
     return output
 
-def migrate_courses(source_root, target_root):
-    for root, dirs, files in os.walk(source_root):
-        for file in files:
-            if file.endswith(".json"):
-                input_file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(root, source_root)
-                target_dir = os.path.join(target_root, rel_path)
-                if not os.path.exists(target_dir): os.makedirs(target_dir)
-                try:
-                    cleaned_data = process_file(input_file_path)
-                    target_file_path = os.path.join(target_dir, file)
-                    with open(target_file_path, 'w', encoding='utf-8') as f:
-                        json.dump(cleaned_data, f, indent=2, ensure_ascii=False)
-                    print(f"Cleaned: {file}")
-                except Exception as e: print(f"Errore in {input_file_path}: {e}")
+def migrate_courses(source_root: str, target_root: str) -> None:
+    source = Path(source_root)
+    target = Path(target_root)
 
-SOURCE = "00-raw_courses"
-TARGET = "v2/01-cleaned_courses"
-migrate_courses(SOURCE, TARGET)
+    json_files = list(source.rglob("*.json"))
+
+    for input_path in tqdm(json_files, desc="Migrating", unit="file"):
+        rel_path = input_path.relative_to(source)
+        target_path = target / rel_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            cleaned_data = process_file(str(input_path))
+            with target_path.open("w", encoding="utf-8") as f:
+                json.dump(cleaned_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            tqdm.write(f"[ERROR] {input_path}: {e}")
+
+
+def main():
+    migrate_courses(SOURCE, TARGET)
+
+if __name__ == "__main__":
+    raise SystemExit(main())

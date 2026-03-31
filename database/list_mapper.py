@@ -1,8 +1,8 @@
 from pathlib import Path
 import json
 from tqdm import tqdm
+from database.database import driver, verify_connection, close_driver
 import re
-from database import driver, verify_connection, close_driver
 
 DATABASE = "neo4j"
 PATH = "v2/01-cleaned_courses/es"
@@ -160,7 +160,6 @@ def run_import(base_dir: str):
 
     if not lists:
         tqdm.write("[INFO] No lists to import")
-        close_driver()
         return
 
     with driver.session(database=DATABASE) as session:
@@ -168,8 +167,7 @@ def run_import(base_dir: str):
             session.execute_write(import_list, item)
 
     tqdm.write("[INFO] Import complete")
-    close_driver()
 
 
 if __name__ == "__main__":
-    run_import(PATH)
+    raise SystemExit(run_import(PATH))

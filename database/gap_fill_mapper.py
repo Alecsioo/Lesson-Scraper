@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 from tqdm import tqdm
-from database import driver, verify_connection, close_driver
+from database.database import driver, verify_connection, close_driver
 
 DATABASE = "neo4j"
 PATH = "v2/01-cleaned_courses/es"
@@ -116,14 +116,13 @@ def run_import(base_dir: str):
 
     if not gap_fills:
         tqdm.write("[INFO] No gap fill exercises to import")
-        close_driver()
         return
 
     with driver.session(database=DATABASE) as session:
         for item in tqdm(gap_fills, desc="Importing gap fills"):
             session.execute_write(import_gap_fill, item)
 
-    close_driver()
+    tqdm.write("[INFO] Import complete")
 
 if __name__ == "__main__":
-    run_import(PATH)
+    raise SystemExit(run_import(PATH))

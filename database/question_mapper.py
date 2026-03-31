@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 from tqdm import tqdm
-from database import driver, verify_connection, close_driver
+from database.database import driver, verify_connection, close_driver
 
 DATABASE = "neo4j"
 PATH = "v2/01-cleaned_courses/es"
@@ -114,10 +114,16 @@ def import_question(tx, item: dict):
 def run_import(base_dir: str):
     verify_connection()
     questions = extract_questions(base_dir)
+
+    if not questions:
+        tqdm.write("[INFO] No questions to import")
+        return
+
     with driver.session(database=DATABASE) as session:
         for item in tqdm(questions, desc="Importing"):
             session.execute_write(import_question, item)
-    close_driver()
+
+    tqdm.write("[INFO] Import complete")
 
 if __name__ == "__main__":
-    run_import(PATH)
+    raise SystemExit(run_import(PATH))
