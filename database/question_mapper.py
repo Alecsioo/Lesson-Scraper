@@ -1,13 +1,11 @@
 from pathlib import Path
 import json
 from tqdm import tqdm
-from database import driver, verify_connection, close_driver
+from database.database import driver, verify_connection, close_driver
 
 DATABASE = "neo4j"
 PATH = "01-cleaned_courses/es"
 TYPES = {"true_false", "multiple_choice", "highlight_selection"}
-
-
 
 
 def make_question_node(exercise: dict, exercise_type: str) -> dict | None:
@@ -70,7 +68,7 @@ def make_answer_nodes(exercise: dict, exercise_type: str) -> list[dict]:
         if is_correct is None:
             return []
         return [
-            {"kind": "tf_option", "value": "true",  "correct": bool(is_correct)},
+            {"kind": "tf_option", "value": "true", "correct": bool(is_correct)},
             {"kind": "tf_option", "value": "false", "correct": not bool(is_correct)},
         ]
 
@@ -148,7 +146,6 @@ def extract_questions(base_dir: str) -> list[dict]:
     return results
 
 
-
 def import_question(tx, item: dict):
     if item["exercise_type"] == "true_false":
         tx.run(
@@ -163,11 +160,10 @@ def import_question(tx, item: dict):
             """,
             question_kind=item["question"]["kind"],
             question_value=item["question"]["value"],
-            is_correct=item["answers"][0]["correct"],  
+            is_correct=item["answers"][0]["correct"],
         )
         return
 
-    
     tx.run(
         """
         MERGE (question:ContentNode {kind: $question_kind, value: $question_value})
@@ -193,7 +189,6 @@ def run_import(base_dir: str):
 
     if not questions:
         tqdm.write("[INFO] No questions to import")
-        close_driver()
         return
 
     with driver.session(database=DATABASE) as session:
@@ -201,8 +196,7 @@ def run_import(base_dir: str):
             session.execute_write(import_question, item)
 
     tqdm.write("[INFO] Import complete")
-    close_driver()
 
 
 if __name__ == "__main__":
-    run_import(PATH)
+    raise SystemExit(run_import(PATH))

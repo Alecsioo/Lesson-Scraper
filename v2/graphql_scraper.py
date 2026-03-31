@@ -2,7 +2,7 @@
 import os
 import requests
 
-from classes import Chapter
+from v2.classes import Chapter
 
 
 # Given a GraphQL JSON, extracts a list of chapters for each level in the course (A2, A1, ...)

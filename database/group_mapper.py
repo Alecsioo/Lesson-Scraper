@@ -2,13 +2,15 @@ import os
 from pathlib import Path
 import json
 from tqdm import tqdm
-from database import driver, verify_connection, close_driver
+from database.database import driver, verify_connection, close_driver
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DATABASE = os.getenv("NEO4J_DATABASE")
-PATH = "v2/01-cleaned_courses/en"
+
+PATH = "01-cleaned_courses"
+FAMILY = "GROUP"
 TYPES = {
     "listen_repeat",
     "dialogue",
@@ -21,38 +23,52 @@ TYPE_CONFIG = {
     "listen_repeat": {
         "label_fields": ["text_orig", "text_en"],
         "item_fields": ["audio_orig", "image", "video"],
-        "relationship_type": "GROUPS_WITH",
     },
     "dialogue": {
         "label_fields": ["text_orig", "text_en"],
         "item_fields": ["audio_orig", "gap_sentence_orig", "correct_answer"],
-        "relationship_type": "GROUPS_WITH",
     },
     "flashcard": {
         "label_fields": ["text_orig", "text_en"],
         "item_fields": ["audio_orig", "audio_en", "image", "video"],
-        "relationship_type": "GROUPS_WITH",
     },
     "speech_recognition": {
         "label_fields": ["text_to_speak_orig"],
         "item_fields": ["image", "audio_orig"],
-        "relationship_type": "GROUPS_WITH",
     },
     "writing": {
         "label_fields": ["hint_orig", "hint_en"],
         "item_fields": ["images"],
-        "relationship_type": "GROUPS_WITH",
     },
 }
+
+# Expected structure relative to PATH:
+# <language> / <course_pack_type> / <level> / <chapter> / <lesson>.json
+PATH_LANGUAGE_IDX = 0
+PATH_LEVEL_IDX = 2
+PATH_MIN_DEPTH = 5
+
+
+def _parse_level(raw: str) -> str:
+    """'pack_level_it_a1' -> 'A1'"""
+    return raw.rsplit("_", 1)[-1].upper()
+
+
+def _extract_path_metadata(path: Path, base_path: Path) -> tuple[str, str] | None:
+    parts = path.relative_to(base_path).parts
+    if len(parts) < PATH_MIN_DEPTH:
+        tqdm.write(f"[WARN] Unexpected path depth ({len(parts)}): {path}")
+        return None
+    language = parts[PATH_LANGUAGE_IDX]
+    level = _parse_level(parts[PATH_LEVEL_IDX])
+    return language, level
 
 
 def make_label_node(exercise: dict, label_fields: list[str]) -> dict | None:
     for field in label_fields:
         value = exercise.get(field)
         if value:
-            return {
-                "value": value,
-            }
+            return {"value": value}
     return None
 
 
@@ -68,14 +84,10 @@ def make_item_nodes(exercise: dict, item_fields: list[str]) -> list[dict]:
         if isinstance(value, list):
             for item in value:
                 if item:
-                    items.append({
-                        "value": item,
-                    })
+                    items.append({"value": item})
         else:
             if value:
-                items.append({
-                    "value": value,
-                })
+                items.append({"value": value})
 
     return items
 
@@ -95,6 +107,12 @@ def extract_groups(base_dir: str) -> list[dict]:
         return results
 
     for path in tqdm(json_files, desc="Scanning JSON files", unit="file"):
+        metadata = _extract_path_metadata(path, base_path)
+        if not metadata:
+            continue
+
+        language, level = metadata
+
         try:
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -119,17 +137,15 @@ def extract_groups(base_dir: str) -> list[dict]:
                 label = make_label_node(exercise, config["label_fields"])
                 items = make_item_nodes(exercise, config["item_fields"])
 
-                if not label:
-                    continue
-
-                if not items:
+                if not label or not items:
                     continue
 
                 results.append({
                     "exercise_type": exercise_type,
-                    "relationship_type": config["relationship_type"],
                     "label": label,
                     "items": items,
+                    "language": language,
+                    "level": level,
                 })
 
     tqdm.write(f"[INFO] Extracted {len(results)} groups total")
@@ -137,29 +153,29 @@ def extract_groups(base_dir: str) -> list[dict]:
 
 
 def import_group(tx, item: dict):
-    relationship_type = item["relationship_type"]
-
-    query = f"""
-    MERGE (label:ContentNode {{
-        value: $label_value
-    }})
-    WITH label
-    UNWIND $items AS item
-        MERGE (content:ContentNode {{
-            value: item.value
-        }})
-        MERGE (label)-[r:{relationship_type} {{
-            family: "GROUP",
-            exercise_type: $exercise_type
-        }}]->(content)
-    """
-
     tx.run(
-        query,
-        label_kind=item["label"],
+        """
+        MERGE (lang:Language {code: $language})
+        MERGE (level:Level {name: $level})
+        MERGE (family:Family {name: $family})
+
+        MERGE (label:ContentNode {value: $label_value})
+
+        MERGE (label)-[:IS_OF_FAMILY]->(family)
+        MERGE (label)-[:IS_FOR_LANGUAGE]->(lang)
+        MERGE (label)-[:IS_OF_LEVEL]->(level)
+
+        WITH label
+        UNWIND $items AS item
+            MERGE (content:ContentNode {value: item.value})
+            MERGE (label)-[:GROUPS_WITH]->(content)
+        """,
         label_value=item["label"]["value"],
         items=item["items"],
         exercise_type=item["exercise_type"],
+        language=item["language"],
+        level=item["level"],
+        family=FAMILY,
     )
 
 
@@ -169,7 +185,6 @@ def run_import(base_dir: str):
 
     if not groups:
         tqdm.write("[INFO] No groups to import")
-        close_driver()
         return
 
     with driver.session(database=DATABASE) as session:
@@ -177,7 +192,6 @@ def run_import(base_dir: str):
             session.execute_write(import_group, item)
 
     tqdm.write("[INFO] Import complete")
-    close_driver()
 
 
 if __name__ == "__main__":

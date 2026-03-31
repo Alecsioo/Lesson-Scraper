@@ -5,15 +5,67 @@ from collections import defaultdict
 
 import requests
 import questionary
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pathlib import Path
 from dotenv import load_dotenv
 from pathvalidate import sanitize_filename
 from tqdm import tqdm
-from graphql_scraper import extract_chapters_by_level
+from v2.graphql_scraper import extract_chapters_by_level
 from v2.classes import Course, Lesson, Level, Chapter
 
 load_dotenv()
+
+MAX_WORKERS = 10
+
+thread_local = threading.local()
+
+
+def _get_thread_session(access_token: str) -> requests.Session:
+    """Return a per-thread requests.Session, creating it on first use."""
+    if not hasattr(thread_local, "session"):
+        s = requests.Session()
+        s.cookies.set("access-token", access_token)
+        thread_local.session = s
+    return thread_local.session
+
+
+def _download_lesson(
+        lesson_url: str,
+        chapter_subdir: Path,
+        lesson,
+        access_token: str,
+        pbar: tqdm,
+) -> None:
+    session = _get_thread_session(access_token)
+
+    raw_response = session.get(lesson_url)
+    assert_response_ok(raw_response)
+    raw_json = raw_response.json()
+
+    text = json.dumps(raw_json, ensure_ascii=False)
+    out_path = chapter_subdir / sanitize_filename(f"{lesson.id}.json", platform.system())
+    out_path.write_text(text, encoding="utf-8")
+
+    pbar.update(1)
+
+
+def choose_language(languages_to_course_packs: dict[str, list[str]], language: str | None = None) -> str:
+    if language:
+        if language not in languages_to_course_packs:
+            raise ValueError(f"Unknown language: {language}")
+        return language
+
+    selected_language = questionary.select(
+        "Select a language:",
+        choices=list(languages_to_course_packs.keys()),
+    ).ask()
+
+    if not selected_language:
+        raise RuntimeError("No language selected")
+
+    return selected_language
 
 
 # Utility method to assert that the provided response status code matches the expected status code
@@ -86,7 +138,7 @@ def map_to_course(course_pack_json: dict, chapters_by_level: list[list[Chapter]]
     return course
 
 
-def main() -> int:
+def main(language: str | None = None) -> str:
     # The access token must be specified in .env
     # It will be used to perform HTTP requests to authenticated endpoints
     access_token = os.getenv("ACCESS_TOKEN")
@@ -133,10 +185,7 @@ def main() -> int:
         print(f"{lang}: {len(packs)} course packs - {packs[:2]}")
 
     # Ask the user to select a language from the keys we just extracted
-    selected_language = questionary.select(
-        "Select a language:",
-        choices=list(languages_to_course_packs.keys()),
-    ).ask()
+    selected_language = choose_language(languages_to_course_packs, language)
 
     # One language can have N courses
     # One course is composed of N levels
@@ -217,26 +266,34 @@ def main() -> int:
 
     # Second pass: download every lesson and advance that pack's bar on each completion
     try:
-        for (course_pack, course_pack_path, lessons_for_pack), pbar in zip(course_pack_items, pack_bars):
-            for chapter_subdir, lesson in lessons_for_pack:
-                # Build the lesson URL dynamically and retrieve the associated lesson JSON
-                lesson_url = base_lesson_url.format(lesson_id=lesson.id, lang=selected_language)
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = []
 
-                raw_response = session.get(lesson_url)
-                assert_response_ok(raw_response)
-                raw_json = raw_response.json()
+            for (course_pack, course_pack_path, lessons_for_pack), pbar in zip(course_pack_items, pack_bars):
+                for chapter_subdir, lesson in lessons_for_pack:
+                    lesson_url = base_lesson_url.format(
+                        lesson_id=lesson.id,
+                        lang=selected_language,
+                    )
+                    future = executor.submit(
+                        _download_lesson,
+                        lesson_url,
+                        chapter_subdir,
+                        lesson,
+                        access_token,
+                        pbar,
+                    )
+                    futures.append(future)
 
-                text = json.dumps(raw_json, ensure_ascii=False)
-                out_path = chapter_subdir / sanitize_filename(f"{lesson.id}.json", platform.system())
-                out_path.write_text(text, encoding="utf-8")
+            for future in as_completed(futures):
+                future.result()  # re-raises any exception from the worker
 
-                pbar.update(1)
     finally:
         for pbar in pack_bars:
             pbar.close()
 
-    return 0
+    return selected_language
 
 
-
-main()
+if __name__ == "__main__":
+    raise SystemExit(main())
