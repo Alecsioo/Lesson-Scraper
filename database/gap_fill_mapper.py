@@ -1,9 +1,9 @@
+import os
 import json
 import re
 from pathlib import Path
 from tqdm import tqdm
 from database.database import driver, verify_connection, close_driver
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,7 +12,27 @@ DATABASE = os.getenv("NEO4J_DATABASE")
 PATH = "01-cleaned_courses"
 TYPES = {"gap_fill_click", "gap_fill_multiple"}
 
+# Metadati percorso
+PATH_LANGUAGE_IDX = 0
+PATH_LEVEL_IDX = 2
+PATH_CHAPTER_IDX = 3
+PATH_LESSON_IDX = 4
+PATH_MIN_DEPTH = 5
+
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+def _parse_level(raw: str) -> str:
+    return raw.rsplit("_", 1)[-1].upper()
+
+def _extract_path_metadata(path: Path, base_path: Path) -> dict | None:
+    parts = path.relative_to(base_path).parts
+    if len(parts) < PATH_MIN_DEPTH: return None
+    return {
+        "language": parts[PATH_LANGUAGE_IDX],
+        "level": _parse_level(parts[PATH_LEVEL_IDX]),
+        "chapter": parts[PATH_CHAPTER_IDX],
+        "lesson": parts[PATH_LESSON_IDX].replace(".json", "")
+    }
 
 def extract_items(exercise: dict, ex_type: str):
     gap_sentence = exercise.get("gap_sentence_orig", "")
@@ -24,7 +44,6 @@ def extract_items(exercise: dict, ex_type: str):
         correct_list = exercise.get("correct_answers", [])
     
     all_distractors = exercise.get("options", [])
-
     parts = re.findall(r"_+|[¿?¡!\wáéíóúüñ]+", gap_sentence)
     
     tokens = []
@@ -33,10 +52,8 @@ def extract_items(exercise: dict, ex_type: str):
     for p in parts:
         if p.startswith('_'):
             if gap_counter < len(correct_list):
-                sol = correct_list[gap_counter]
-                
                 tokens.append({
-                    "text": sol,
+                    "text": correct_list[gap_counter],
                     "isTarget": True,
                     "options": all_distractors 
                 })
@@ -57,6 +74,9 @@ def extract_all_gap_fills(base_dir: str) -> list[dict]:
     json_files = list(base_path.rglob("*.json"))
 
     for path in tqdm(json_files, desc="Scanning JSON files"):
+        meta = _extract_path_metadata(path, base_path)
+        if not meta: continue
+
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -69,8 +89,8 @@ def extract_all_gap_fills(base_dir: str) -> list[dict]:
                 if items:
                     results.append({
                         "exercise_id": exercise.get("exercise_id"),
-                        "exercise_type": ex_type,
-                        "tokens": items
+                        "tokens": items,
+                        **meta
                     })
     return results
 
@@ -78,56 +98,87 @@ def extract_all_gap_fills(base_dir: str) -> list[dict]:
 
 def import_gap_fill(tx, item: dict):
     ex_id = item["exercise_id"]
-    ex_type = item["exercise_type"]
     tokens = item["tokens"]
+    
+    # 1. Creazione Pool Opzioni (Corrette di tutti i gap + Distrattori)
+    all_correct_texts = [t["text"] for t in tokens if t["isTarget"]]
+    distractors = []
+    for t in tokens:
+        if t["options"]:
+            distractors = t["options"]
+            break
+    full_options_pool = list(set(all_correct_texts + distractors))
 
-    for i in range(len(tokens) - 1):
-        tx.run("""
-            MERGE (a:ContentNode {text: $text_a})
-            MERGE (b:ContentNode {text: $text_b})
-            WITH a, b
-            MERGE (a)-[r:NEXT {exercise_id: $ex_id, idx: $idx}]->(b)
-            SET r.family = "LIST",
-                r.exercise_type = $ex_type,
-                r.a_isTarget = $a_target,
-                r.b_isTarget = $b_target
-            """,
-            text_a=tokens[i]["text"],
-            text_b=tokens[i+1]["text"],
-            a_target=tokens[i]["isTarget"],
-            b_target=tokens[i+1]["isTarget"],
-            ex_id=ex_id, ex_type=ex_type, idx=i
-        )
+    # 2. Pulizia Idempotenza
+    tx.run("""
+        MATCH (ls:Lesson {name: $ls})-[r:HAS_START_NODE {exercise_id: $ex_id}]->(n:ContentNode)
+        MATCH (n)-[:NEXT*0..]->(m)
+        OPTIONAL MATCH (m)-[:HAS_ANSWER]->(o)
+        DETACH DELETE m, o
+    """, ls=item["lesson"], ex_id=ex_id)
 
-    for token in tokens:
-        if token["isTarget"] and token["options"]:
-            for opt in token["options"]:
+    # 3. Struttura Gerarchica (MERGE)
+    tx.run("""
+        MERGE (lang:Language {code: $lang})
+        MERGE (lvl:Level {name: $lvl})
+        MERGE (ch:Chapter {name: $ch})
+        MERGE (ls:Lesson {name: $ls})
+        
+        MERGE (lang)-[:HAS_LEVEL]->(lvl)
+        MERGE (lvl)-[:HAS_CHAPTER]->(ch)
+        MERGE (ch)-[:HAS_LESSON]->(ls)
+    """, lang=item["language"], lvl=item["level"], ch=item["chapter"], ls=item["lesson"])
+
+    # 4. Nodi Family
+    tx.run("MERGE (:Family {name: 'LIST'})")
+    tx.run("MERGE (:Family {name: 'QUESTION'})")
+
+    # 5. Creazione Catena e Opzioni
+    prev_node_id = None
+
+    for i, t_data in enumerate(tokens):
+        # Ogni nodo ContentNode ha SOLO il testo
+        res = tx.run("CREATE (n:ContentNode {text: $text}) RETURN elementId(n) as id", 
+                     text=t_data["text"])
+        curr_node_id = res.single()["id"]
+
+        if i == 0:
+            # Primo nodo: collega a Lesson e a Family LIST
+            tx.run("""
+                MATCH (ls:Lesson {name: $ls}), (f:Family {name: 'LIST'}), (n)
+                WHERE elementId(n) = $id
+                CREATE (ls)-[:HAS_START_NODE {exercise_id: $ex_id, isTarget: $isTarget}]->(n)
+                CREATE (n)-[:IS_OF_FAMILY]->(f)
+            """, ls=item["lesson"], id=curr_node_id, ex_id=ex_id, isTarget=t_data["isTarget"])
+        
+        if prev_node_id:
+            # Collegamento NEXT
+            tx.run("""
+                MATCH (a) WHERE elementId(a) = $id_a 
+                MATCH (b) WHERE elementId(b) = $id_b 
+                CREATE (a)-[:NEXT {isTarget: $isTarget}]->(b)
+            """, id_a=prev_node_id, id_b=curr_node_id, isTarget=t_data["isTarget"])
+
+        # 6. Se è un buco, colleghiamo TUTTO il pool di opzioni (Family QUESTION)
+        if t_data["isTarget"]:
+            for opt_text in full_options_pool:
+                is_this_correct = (opt_text == t_data["text"])
                 tx.run("""
-                    MATCH (q:ContentNode {text: $gap_text})
-                    MERGE (o:ContentNode {text: $opt_text})
-                    MERGE (q)-[r:HAS_ANSWER {exercise_id: $ex_id}]->(o)
-                    SET r.family = "QUESTION",
-                        r.correct = false
-                    """,
-                    gap_text=token["text"],
-                    opt_text=opt,
-                    ex_id=ex_id
-                )
+                    MATCH (q) WHERE elementId(q) = $q_id
+                    MATCH (f:Family {name: 'QUESTION'})
+                    CREATE (o:ContentNode {text: $opt_text}) 
+                    CREATE (o)-[:IS_OF_FAMILY]->(f)
+                    CREATE (q)-[:HAS_ANSWER {isCorrect: $is_correct}]->(o)
+                """, q_id=curr_node_id, opt_text=opt_text, is_correct=is_this_correct)
+
+        prev_node_id = curr_node_id
 
 def run_import(base_dir: str):
     verify_connection()
-    gap_fills = extract_all_gap_fills(base_dir)
-
-    if not gap_fills:
-        tqdm.write("[INFO] No gap fill exercises to import")
-        return
-
+    data_list = extract_all_gap_fills(base_dir)
     with driver.session(database=DATABASE) as session:
-        for item in tqdm(gap_fills, desc="Importing gap fills"):
+        for item in tqdm(data_list, desc="Importing Gap Fills"):
             session.execute_write(import_gap_fill, item)
 
-    tqdm.write("[INFO] Import complete")
-
-
 if __name__ == "__main__":
-    raise SystemExit(run_import(PATH))
+    run_import(PATH)
